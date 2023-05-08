@@ -1,0 +1,199 @@
+---
+title: "Scale ts"
+author: "Andrés Camargo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(Metrics)
+library(zoo)
+library(forecast)
+library(prophet)
+library(ggplot2)
+library(deepANN)
+
+s_ts = read.csv("data/sales_products_ts.csv")
+```
+
+```{r}
+#get all ids of products
+id_ts = unique(s_ts$id)
+
+#delete unused column
+s_ts = s_ts %>% select(c(id,date, quantity)) %>% mutate(date= ymd(date))
+
+# define replace outliers function
+replace_outliers <- function(x) {
+  q3 = quantile(x$quantity, 0.75)
+  q1 = quantile(x$quantity, 0.25)
+  iqr = IQR(x$quantity, na.rm = TRUE)
+  maxLimit = q3 + (1.5*iqr)
+  minLimit = q1 - (1.5*iqr)
+  
+  x$quantity[x$quantity > maxLimit] <- maxLimit
+  x$quantity[x$quantity < minLimit] <- minLimit
+  
+  return(x)
+}
+
+# RMSE function
+rmse_na = function (x, y) {
+  sqrt(mean((x - y)^2, na.rm = TRUE))
+}
+
+# dataframe of models results
+model_products = data.frame()
+```
+
+```{r}
+i='17410306'
+```
+
+
+```{r}
+
+for (i in id_ts){
+  #filter the dataset
+  df = s_ts %>% filter(id== i) %>% 
+      mutate(date_ym = paste(year(date), month(date), sep = "-")) %>% 
+      arrange(date) %>% 
+      distinct()
+      
+      # create chart of ts
+      ts_plot = df %>% ggplot(aes(date, quantity)) + geom_line()
+      ggsave(paste("scale_outputs/",i,"/images/ts_plot.png", sep=""), ts_plot)
+      
+      # Replace outliers
+      df = replace_outliers(df)
+      
+      # Log transformation
+      df['qtyLog'] = log(df$quantity+1)
+      df %>% ggplot(aes(date, qtyLog)) + geom_line()
+      
+      # train/test split
+      split_date = '2021-01-01' #cambiar la fecha a una que se ajuste a todos los DF
+      train = df %>% filter(date< split_date)
+      test = df %>% filter(date>=split_date)
+      
+      
+      
+      # mean model
+      mean_model = mean(train$qtyLog)
+      test['qtyMean'] = exp(mean_model)-1
+        ## mean model evaluation
+      test['rmse_mean'] = rmse_na(test$quantity,test$qtyMean)
+      test['wape_mean'] = wape(test$quantity,test$qtyMean)
+      mean_plot = test %>% ggplot(aes(date)) + 
+      geom_line(aes(y = quantity, color = "actual")) +
+      geom_line(aes(y = qtyMean, color = "Mean")) +
+      labs(y = "Quantity", color = "Series")
+      ggsave(paste("scale_outputs/",i,"/images/mean_plot.png", sep=""), mean_plot)
+      
+      
+      # Linear model (time difference)
+      train$timeIndex <- train$date - min(train$date)
+        ## calculate time difference
+      train$timeIndex <- interval(floor_date(min(train$date), unit = "week"), 
+        floor_date(train$date, unit = "week")) / weeks(1)
+      test$timeIndex <- interval(floor_date(min(test$date), unit = "week"), 
+        floor_date(test$date, unit = "week")) / weeks(1)
+        ## linear model
+      model_linear <- lm(qtyLog ~ timeIndex, data = train)
+      model_linear_pred = predict(model_linear, test)
+      test$qtyLinear = exp(model_linear_pred)-1
+        ## evaluation
+      test['rmse_ma4'] = rmse_na(test$quantity,test$qtyLinear)
+      test['wape_ma4'] = wape(test$quantity,test$qtyLinear)
+        ## plot
+      linear_plot = test %>% ggplot(aes(date)) + 
+        geom_line(aes(y = quantity, color = "actual")) +
+        geom_line(aes(y = qtyLinear, color = "linear")) +
+        labs(y = "Quantity", color = "Series")
+      ggsave(paste("scale_outputs/",i,"/images/linear_plot.png", sep=""), linear_plot)
+      
+      
+      # Random Walk (t-1)
+        ## create shift 1
+      train$qtyLogShift1 = lag(train$qtyLog)
+      rw_shift_plot = train %>% ggplot(aes(qtyLogShift1, qtyLog)) + geom_point()
+      ggsave(paste("scale_outputs/",i,"/images/rw_shift_plot.png", sep=""), rw_shift_plot)
+      train$qtyLogDiff = train$qtyLog - train$qtyLogShift1
+      train$qtyRandomW = exp(train$qtyLogShift1)-1
+        ## Prediction
+      
+   
+      # Moving average
+      window_size = 4
+      qtyLogMA4 = rollmean(train$qtyLog, k=window_size, allign="right", fill=NA) 
+      qtyLogMA4_nan = na.omit(qtyLogMA4) #sin NA
+      lastMA4 = qtyLogMA4[length(qtyLogMA4_nan)] #corregir para que seleccione el ultimo
+      test$qtyMA4 = exp(lastMA4)-1
+      test['rmse_ma4'] = rmse_na(test$quantity,test$qtyMA4)
+      test['wape_ma4'] = wape(test$quantity,test$qtyMA4)
+      
+      
+      # Arima model
+      ts_log = train$qtyLog
+      model_arima = auto.arima(ts_log)
+      forecast_arima = forecast(model_arima, h=nrow(test))
+      arima_plot = autoplot(forecast_arima)
+      ggsave(paste("scale_outputs/",i,"/images/arima_plot.png", sep=""), arima_plot)
+      forecast_arima_df = as.data.frame(forecast_arima[[4]])
+      test$qtyArima = exp(forecast_arima_df$x)-1
+        ## mean model evaluation
+      test['rmse_arima'] = rmse_na(test$quantity,test$qtyArima)
+      test['wape_arima'] = wape(test$quantity,test$qtyArima)
+      
+      
+      # Prophet model
+        ## formating
+      df_prophet = train %>% dplyr::select(c(date, qtyLog)) %>%
+      rename(ds = date, y = qtyLog)
+        ## model
+      model_prophet = prophet(df_prophet, weekly.seasonality=TRUE)
+      summary(model_prophet)
+        ## predictions
+      future_df = make_future_dataframe(model_prophet, periods=nrow(test), freq="week")
+      forecast_prophet = predict(model_prophet, future_df)
+        ## plot
+      prophet_fcst_plot = plot(model_prophet, forecast_prophet)
+      ggsave(paste("scale_outputs/",i,"/images/prophet_fcst_plot.png", sep=""), prophet_fcst_plot)
+      prophet_components_plot = prophet_plot_components(
+        model_prophet,forecast_prophet, uncertainty = TRUE, plot_cap = TRUE,
+        weekly_start = 0, yearly_start = 0, render_plot = TRUE
+      )
+      for (j in seq_along(prophet_components_plot)){
+        ggsave(paste("scale_outputs/",i,"/images/prophet_components_plot",j,".png", sep=""),
+             prophet_components_plot[[j]])
+      }
+        ## evaluation
+      qtyLogProphet = forecast_prophet$yhat[(nrow(train)+1):length(forecast_prophet$yhat)]
+      test$qtyProphet = exp(qtyLogProphet)-1
+      test['rmse_prophet'] = rmse_na(test$quantity,test$qtyProphet)
+      test['wape_prophet'] = wape(test$quantity,test$qtyProphet)
+      
+      #crossvalidation_prophet <- cross_validation(model_prophet, initial = 1807, 
+       #                         period = 90, horizon = 30, units = 'days')
+
+      
+      write.csv(test, paste("scale_outputs/",i,"/models_results.csv", sep=""))
+      model_products = rbind(model_products, test)
+      model_productsL = rbind(model_products, test)
+      write.csv(model_products, paste("scale_outputs/all_models_results.csv", sep=""))
+      print(i)
+
+}
+
+```
+
+```{r}
+test
+```
+
