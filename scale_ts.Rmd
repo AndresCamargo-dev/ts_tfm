@@ -181,13 +181,13 @@ for (i in id_ts){
       
       #crossvalidation_prophet <- cross_validation(model_prophet, initial = 1807, 
        #                         period = 90, horizon = 30, units = 'days')
-
       
+      # Save files
       write.csv(test, paste("scale_outputs/",i,"/models_results.csv", sep=""))
       model_products = rbind(model_products, test)
-      model_productsL = rbind(model_products, test)
-      write.csv(model_products, paste("scale_outputs/all_models_results.csv", sep=""))
+      #write.csv(model_products, paste("scale_outputs/all_models_results.csv", sep=""))
       print(i)
+      
 
 }
 
