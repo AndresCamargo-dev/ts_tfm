@@ -53,7 +53,9 @@ model_products = data.frame()
 ```
 
 ```{r}
-i='17410306'
+i='00612001'
+i='00618080'
+
 ```
 
 
@@ -78,7 +80,9 @@ for (i in id_ts){
       df %>% ggplot(aes(date, qtyLog)) + geom_line()
       
       # train/test split
-      split_date = '2021-01-01' #cambiar la fecha a una que se ajuste a todos los DF
+      weeks_train = round(as.numeric(difftime(max(df$date), min(df$date), unit="weeks"))*0.7)
+      split_date = min(df$date) + weeks(weeks_train)  
+      #split_date = '2021-01-01' #cambiar la fecha a una que se ajuste a todos los DF
       train = df %>% filter(date< split_date)
       test = df %>% filter(date>=split_date)
       
@@ -184,9 +188,8 @@ for (i in id_ts){
 
       
       write.csv(test, paste("scale_outputs/",i,"/models_results.csv", sep=""))
-      model_products = rbind(model_products, test)
-      model_productsL = rbind(model_products, test)
-      write.csv(model_products, paste("scale_outputs/all_models_results.csv", sep=""))
+      #model_products = rbind(model_products, test)
+      #write.csv(model_products, paste("scale_outputs/all_models_results.csv", sep=""))
       print(i)
 
 }
@@ -194,6 +197,8 @@ for (i in id_ts){
 ```
 
 ```{r}
-test
+
+weeks_train = round(as.numeric(difftime(max(df$date), min(df$date), unit="weeks"))*0.7)
+split_date = min(df$date) + weeks(q3)      
 ```
 
