@@ -54,7 +54,6 @@ model_products = data.frame()
 
 ```{r}
 i='00612001'
-i='00618080'
 
 ```
 
@@ -82,16 +81,14 @@ for (i in id_ts){
       # train/test split
       weeks_train = round(as.numeric(difftime(max(df$date), min(df$date), unit="weeks"))*0.7)
       split_date = min(df$date) + weeks(weeks_train)  
-      #split_date = '2021-01-01' #cambiar la fecha a una que se ajuste a todos los DF
       train = df %>% filter(date< split_date)
       test = df %>% filter(date>=split_date)
-      
       
       
       # mean model
       mean_model = mean(train$qtyLog)
       test['qtyMean'] = exp(mean_model)-1
-        ## mean model evaluation
+      ## mean model evaluation
       test['rmse_mean'] = rmse_na(test$quantity,test$qtyMean)
       test['wape_mean'] = wape(test$quantity,test$qtyMean)
       mean_plot = test %>% ggplot(aes(date)) + 
@@ -128,19 +125,33 @@ for (i in id_ts){
       train$qtyLogShift1 = lag(train$qtyLog)
       rw_shift_plot = train %>% ggplot(aes(qtyLogShift1, qtyLog)) + geom_point()
       ggsave(paste("scale_outputs/",i,"/images/rw_shift_plot.png", sep=""), rw_shift_plot)
-      train$qtyLogDiff = train$qtyLog - train$qtyLogShift1
       train$qtyRandomW = exp(train$qtyLogShift1)-1
         ## Prediction
+      test$qtyRw = tail(train$qtyRandomW, n=1)
+      test['rmse_rw'] = rmse_na(test$quantity,test$qtyRw)
+      test['wape_rw'] = wape(test$quantity,test$qtyRw)
+        ## Plot
+      rw_plot  = test %>% ggplot(aes(date)) + 
+      geom_line(aes(y = quantity, color = "actual")) +
+      geom_line(aes(y = qtyRw, color = "Random Walk")) +
+      labs(y = "Quantity", color = "Series")
+      ggsave(paste("scale_outputs/",i,"/images/rw_plot.png", sep=""), rw_plot)
       
    
       # Moving average
       window_size = 4
       qtyLogMA4 = rollmean(train$qtyLog, k=window_size, allign="right", fill=NA) 
-      qtyLogMA4_nan = na.omit(qtyLogMA4) #sin NA
-      lastMA4 = qtyLogMA4[length(qtyLogMA4_nan)] #corregir para que seleccione el ultimo
+      lastMA4 = tail(na.omit(qtyLogMA4), n=1)
+        ## Prediction
       test$qtyMA4 = exp(lastMA4)-1
       test['rmse_ma4'] = rmse_na(test$quantity,test$qtyMA4)
       test['wape_ma4'] = wape(test$quantity,test$qtyMA4)
+        ## Plot
+      ma4_plot  = test %>% ggplot(aes(date)) + 
+      geom_line(aes(y = quantity, color = "actual")) +
+      geom_line(aes(y = qtyMA4, color = "Moving Average")) +
+      labs(y = "Quantity", color = "Series")
+      ggsave(paste("scale_outputs/",i,"/images/ma4_plot.png", sep=""), ma4_plot)
       
       
       # Arima model
@@ -198,7 +209,66 @@ for (i in id_ts){
 
 ```{r}
 
-weeks_train = round(as.numeric(difftime(max(df$date), min(df$date), unit="weeks"))*0.7)
-split_date = min(df$date) + weeks(q3)      
+ts_log = train$qtyLog
+model_arima = auto.arima(train$quantity)
+forecast_arima = forecast(model_arima, h=length(test))
+#arima_plot = autoplot(forecast_arima)
+#ggsave(paste("scale_outputs/",i,"/images/arima_plot.png", sep=""), arima_plot)
+#forecast_arima_df = as.data.frame(forecast_arima[[4]])
+test$qtyArima = exp(forecast_arima$mean)-1
+  ## mean model evaluation
+test['rmse_arima'] = rmse_na(test$quantity,test$qtyArima)
+test['wape_arima'] = wape(test$quantity,test$qtyArima)
+
+
+results <- data.frame(
+  date = test$date,
+  actual = test$quantity,
+  forecast = forecast_arima$mean
+)
+
+
+test %>% ggplot(aes(date)) + 
+  geom_line(aes(y = quantity, color = "Actual")) +
+  geom_line(aes(y = qtyArima, color = "Arima")) +
+  labs(y = "Quantity", color = "Series")
+
+```
+
+
+```{r}
+implement arima with test and train, and create a ggplot comparing actual versus forcasts
+library(forecast)
+library(ggplot2)
+
+# Load data
+data <- AirPassengers
+
+# Split data into train and test sets
+train_data <- window(data, end = c(1958, 12))
+test_data <- window(data, start = c(1959, 1))
+
+# Fit ARIMA model on the training data
+arima_model <- auto.arima(train_data)
+
+# Make forecast for the test data
+forecast_data <- forecast(arima_model, h = length(test_data))
+
+# Combine actual and forecasted data into a data frame
+results <- data.frame(
+  date = index(test_data),
+  actual = coredata(test_data),
+  forecast = forecast_data$mean
+)
+
+# Plot actual versus forecasted values
+ggplot(results, aes(x = date)) +
+  geom_line(aes(y = actual, color = "Actual")) +
+  geom_line(aes(y = forecast, color = "Forecast")) +
+  scale_color_manual(values = c("Actual" = "blue", "Forecast" = "red")) +
+  labs(x = "Year", y = "Passenger Count", title = "ARIMA Forecast vs Actual") +
+  theme_bw()
+
+
 ```
 
