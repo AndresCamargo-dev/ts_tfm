@@ -54,7 +54,8 @@ model_products = data.frame()
 
 ```{r}
 i='00612001'
-id='17410306'
+i='17410306'
+
 
 ```
 
@@ -167,7 +168,7 @@ for (i in id_ts){
       test['rmse_arima'] = rmse_na(test$quantity,test$qtyArima)
       test['wape_arima'] = wape(test$quantity,test$qtyArima)
       
-      
+
       # Prophet model
         ## formating
       df_prophet = train %>% dplyr::select(c(date, qtyLog)) %>%
@@ -189,6 +190,11 @@ for (i in id_ts){
         ggsave(paste("scale_outputs/",i,"/images/prophet_components_plot",j,".png", sep=""),
              prophet_components_plot[[j]])
       }
+        # Plot prediction/actual
+      test %>% ggplot(aes(date)) + 
+      geom_line(aes(y = quantity, color = "Actual")) +
+      geom_line(aes(y = qtyProphet, color = "Prophet")) +
+      labs(y = "Quantity", color = "Series") + theme_minimal()
         ## evaluation
       qtyLogProphet = forecast_prophet$yhat[(nrow(train)+1):length(forecast_prophet$yhat)]
       test$qtyProphet = exp(qtyLogProphet)-1
@@ -210,10 +216,16 @@ for (i in id_ts){
 ```
 
 ```{r}
+# propuesta: reducir el periodo de test?
+split_date = max(df$date) - weeks(8)  
+train = df %>% filter(date< split_date)
+test = df %>% filter(date>=split_date)
+
+
 
 ts_log = train$qtyLog
-model_arima = auto.arima(ts_log)
-forecast_arima = forecast(model_arima, h=nrow(test))
+model_arima = auto.arima(ts_log, stepwise = TRUE)
+forecast_arima = forecast(model_arima, h=8)
 #arima_plot = autoplot(forecast_arima)
 #ggsave(paste("scale_outputs/",i,"/images/arima_plot.png", sep=""), arima_plot)
 #forecast_arima_df = as.data.frame(forecast_arima[[4]])
@@ -229,6 +241,9 @@ test %>% ggplot(aes(date)) +
   labs(y = "Quantity", color = "Series")
 
 nrow(test)
+
+autoplot(forecast_arima, PI=FALSE)
+
 
 ```
 
