@@ -107,9 +107,9 @@ for (i in id_ts){
       # train/test split
       weeks_train = round(as.numeric(difftime(max(df$date), min(df$date), unit="weeks"))*0.7)
       split_date = min(df$date) + weeks(weeks_train)  
+      #split_date = max(df$date) - weeks(4)
       train = df %>% filter(date< split_date)
       test = df %>% filter(date>=split_date)
-      
       
       
       # mean model
@@ -217,7 +217,7 @@ for (i in id_ts){
 
       
 
-      # Prophet model
+      # Prophet model - baseline
         ## formating
       df_prophet = train %>% dplyr::select(c(date, qtyLog)) %>%
       rename(ds = date, y = qtyLog)
@@ -250,18 +250,50 @@ for (i in id_ts){
       wape = wape(test$quantity,test$qtyProphet)
       ))
         ## Plot prediction/actual
-      test %>% ggplot(aes(date)) + 
+      plot_prophet_dft = test %>% ggplot(aes(date)) + 
       geom_line(aes(y = quantity, color = "Actual")) +
-      geom_line(aes(y = qtyProphet, color = "Prophet")) +
+      geom_line(aes(y = qtyProphetTun, color = "Prophet")) +
       labs(y = "Quantity", color = "Series") + theme_minimal()
+      ggsave(paste("scale_outputs/",i,"/images/prophet_dft_plot.png", sep=""), plot_prophet_dft)
 
-      #crossvalidation_prophet <- cross_validation(model_prophet, initial = 1807, 
-       #                         period = 90, horizon = 30, units = 'days')
+
+      # Prophet - hyperparameters tunned
+        ## data preparation
+      df_prophet2 = df %>% dplyr::select(c(date, qtyLog)) %>%
+      rename(ds = date, y = qtyLog)
+
+        ## Fit the model
+      auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale, #0.05
+                            seasonality.prior.scale = best_params$seasonality_prior_scale, #0.01
+                            seasonality.mode = best_params$seasonality_mode) #multiplictive
+      
+        ## Cross-validation
+      auto_model_cv <- cross_validation(auto_model, initial = round(as.numeric(difftime(split_date_70,  min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
+      auto_model_p <- performance_metrics(auto_model_cv, rolling_window = 1)
+        ## Predictions
+      fit_prophet = predict(auto_model)
+      ph_test_predictions = fit_prophet %>% filter (ds >= split_date) 
+      test$qtyProphetTun = exp(ph_test_predictions$yhat)-1
+        ## save metrics
+      models_performance <- rbind(models_performance, data.frame(
+            id = i, 
+            model = "Prophet HypOpt Cv", 
+            rmse = rmse_na(test$quantity,test$qtyProphetTun),
+            wape = wape(test$quantity,test$qtyProphetTun)
+            #,smape = auto_model_p$smape[1]
+            ))
+        ## plot
+      #plot(auto_model, fit_prophet)
+      plot_prophet_tunned = test %>% ggplot(aes(date)) + 
+      geom_line(aes(y = quantity, color = "Actual")) +
+      geom_line(aes(y = qtyProphetTun, color = "Prophet Tunned")) +
+      labs(y = "Quantity", color = "Series") + theme_minimal()
+      ggsave(paste("scale_outputs/",i,"/images/prophet_tunned_plot.png", sep=""), plot_prophet_tunned)
+
       
       # Save files
       write.csv(test, paste("scale_outputs/",i,"/models_results.csv", sep=""))
-      #model_products = rbind(model_products, test)
-      #write.csv(model_products, paste("scale_outputs/all_models_results.csv", sep=""))
+      
       
       print(i)
       
@@ -379,10 +411,11 @@ events = data.frame(
 
 all_events <- rbind(events, holidays) 
 
-# baseline prophet with crossvalidation
+## data preparation
 df_prophet2 = df %>% dplyr::select(c(date, qtyLog)) %>%
 rename(ds = date, y = qtyLog)
-  ## model
+
+# baseline prophet with crossvalidation
 model_prophet2 = prophet(df_prophet2)
 summary(model_prophet2)
   ## predictions
@@ -393,6 +426,7 @@ pht2_metrics = performance_metrics(crossvalidation_prophet, rolling_window = 1)
 
 # hyperparameters tunning
 model_prophet3 = prophet(df_prophet2, yearly.seasonality = TRUE, changepoint.range = 0.9, holidays = events)
+model_prophet3 = add_country_holidays(model_prophet3, country_name = 'SPA')
 summary(model_prophet2)
   ## predictions
 cv_prophet3 <- cross_validation(model_prophet3, initial = round(as.numeric(difftime(split_date, min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
@@ -401,6 +435,8 @@ performance_metrics(cv_prophet3, rolling_window = 1)
 
 
 ```
+
+Hyperparameters Tunning with Grid Search
 
 ```{r}
 
@@ -413,11 +449,11 @@ param_grid <- list(
 # Generate all combinations of parameters
 all_params <- expand.grid(param_grid)
 # Create a list to store MAPE values for each combination
-smapes <- numeric(length = nrow(all_params))
+rmses <- numeric(length = nrow(all_params))
 # Use cross validation to evaluate all parameters
-for (i in seq_len(nrow(all_params))) {
+for (k in seq_len(nrow(all_params))) {
   # Fit a model using one parameter combination
-  params <- all_params[i, ]
+  params <- all_params[k, ]
   m <- prophet(
     df_prophet2,
     changepoint.prior.scale = params[["changepoint_prior_scale"]],
@@ -429,26 +465,48 @@ for (i in seq_len(nrow(all_params))) {
   # Model performance
   df_p <- performance_metrics(df_cv, rolling_window=1)
   # Save model performance metrics
-  smapes[i] <- df_p[['smape']][1]
+  rmses[k] <- df_p[['rmse']][1]
 }
 
 # Tuning results
-tuning_results <- data.frame(all_params, smape = smapes)
+tuning_results <- data.frame(all_params, rmse = rmses)
 # Find the best parameters
-best_params <- all_params[which.min(smapes), ]
+best_params <- all_params[which.min(rmses), ]
 print(best_params)
 
-
 # Fit the model on the training dataset
-auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale,
-                      seasonality.prior.scale = best_params$seasonality_prior_scale,
-                      seasonality.mode = best_params$seasonality_mode)
+auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale, #0.05
+                      seasonality.prior.scale = best_params$seasonality_prior_scale, #0.01
+                      seasonality.mode = best_params$seasonality_mode) #multiplictive
 
 # Cross-validation
-auto_model_cv <- cross_validation(auto_model, initial = round(as.numeric(difftime(split_date, min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
+initial_date = round(as.numeric(difftime(split_date-weeks(4),  min(df_prophet2$ds), units = "days")))
+auto_model_cv <- cross_validation(auto_model, initial = initial_date, period = 30, horizon = 30, units = 'days')
 auto_model_p <- performance_metrics(auto_model_cv, rolling_window = 1)
-auto_model_p$smape[1]
+auto_model_p$rmse[1]
 
+
+# Predictions
+auto_model_cv_fil = auto_model_cv %>% filter(ds >= split_date)
+test$qtyProphetTun = exp(auto_model_cv_fil$yhat)-1
+# save metrics
+models_performance <- rbind(models_performance, data.frame(
+      id = i, 
+      model = "Prophet HypOpt Cv", 
+      rmse = rmse_na(test$quantity,test$qtyProphetTun),
+      wape = wape(test$quantity,test$qtyProphetTun)
+      #,smape = auto_model_p$smape[1]
+      ))
+# plot
+plot(model_prophet, fit_prophet)
+```
+```{r}
+
+round(as.numeric(difftime(split_date,  min(df_prophet2$ds), units = "days")))
+
+df
+split_date
+test
 
 ```
 
