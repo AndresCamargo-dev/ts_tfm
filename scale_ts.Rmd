@@ -238,11 +238,9 @@ for (i in id_ts){
         ggsave(paste("scale_outputs/",i,"/images/prophet_components_plot",j,".png", sep=""),
              prophet_components_plot[[j]])
       }
-
         ## evaluation
       qtyLogProphet = forecast_prophet$yhat[(nrow(train)+1):length(forecast_prophet$yhat)]
       test$qtyProphet = exp(qtyLogProphet)-1
-      
       models_performance <- rbind(models_performance, data.frame(
       id = i, 
       model = "Prophet default Hyp", 
@@ -252,7 +250,7 @@ for (i in id_ts){
         ## Plot prediction/actual
       plot_prophet_dft = test %>% ggplot(aes(date)) + 
       geom_line(aes(y = quantity, color = "Actual")) +
-      geom_line(aes(y = qtyProphetTun, color = "Prophet")) +
+      geom_line(aes(y = qtyProphet, color = "Prophet")) +
       labs(y = "Quantity", color = "Series") + theme_minimal()
       ggsave(paste("scale_outputs/",i,"/images/prophet_dft_plot.png", sep=""), plot_prophet_dft)
 
@@ -268,7 +266,7 @@ for (i in id_ts){
                             seasonality.mode = best_params$seasonality_mode) #multiplictive
       
         ## Cross-validation
-      auto_model_cv <- cross_validation(auto_model, initial = round(as.numeric(difftime(split_date_70,  min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
+      auto_model_cv <- cross_validation(auto_model, initial = round(as.numeric(difftime(split_date,  min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
       auto_model_p <- performance_metrics(auto_model_cv, rolling_window = 1)
         ## Predictions
       fit_prophet = predict(auto_model)
@@ -300,7 +298,7 @@ for (i in id_ts){
 
 }
 
-#write.csv(models_performance, paste("scale_outputs/all_models_performance.csv", sep=""))
+write.csv(models_performance, paste("scale_outputs/all_models_performance.csv", sep=""))
 
 ```
 
@@ -411,9 +409,7 @@ events = data.frame(
 
 all_events <- rbind(events, holidays) 
 
-## data preparation
-df_prophet2 = df %>% dplyr::select(c(date, qtyLog)) %>%
-rename(ds = date, y = qtyLog)
+
 
 # baseline prophet with crossvalidation
 model_prophet2 = prophet(df_prophet2)
@@ -439,6 +435,9 @@ performance_metrics(cv_prophet3, rolling_window = 1)
 Hyperparameters Tunning with Grid Search
 
 ```{r}
+## data preparation
+df_prophet2 = df %>% dplyr::select(c(date, qtyLog)) %>%
+rename(ds = date, y = qtyLog)
 
 # Set up parameter grid
 param_grid <- list(
@@ -502,11 +501,7 @@ plot(model_prophet, fit_prophet)
 ```
 ```{r}
 
-round(as.numeric(difftime(split_date,  min(df_prophet2$ds), units = "days")))
-
-df
-split_date
-test
+n_distinct(models_performance$id)
 
 ```
 
