@@ -1,5 +1,5 @@
 ---
-title: "Scale ts"
+title: "Scale_ts_clean"
 author: "Andrés Camargo"
 date: "`r Sys.Date()`"
 output: html_document
@@ -8,6 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
 
 ```{r}
 library(tidyverse)
@@ -22,6 +23,7 @@ library(deepANN)
 s_ts = read.csv("data/sales_products_ts.csv")
 ```
 
+
 ```{r}
 #get all ids of products
 id_ts = unique(s_ts$id)
@@ -29,6 +31,11 @@ id_ts = unique(s_ts$id)
 #delete unused column
 s_ts = s_ts %>% select(c(id,date, quantity)) %>% mutate(date= ymd(date))
 
+```
+
+Defining functions
+
+```{r}
 # define replace outliers function
 replace_outliers <- function(x) {
   q3 = quantile(x$quantity, 0.75)
@@ -47,25 +54,9 @@ replace_outliers <- function(x) {
 rmse_na = function (x, y) {
   sqrt(mean((x - y)^2, na.rm = TRUE))
 }
-```
 
-```{r}
-#dataframes for saving results
-models_predictions = data.frame(
-  id = character(),
-  date = as.Date(character(), format = "%Y-%m-%d"),
-  quantity = numeric(),
-  date_ym = character(),
-  qtyLog = numeric(),
-  qtyMean = numeric(),
-  qtyLinear = numeric(),
-  qtyRw = numeric(),
-  qtyMA4 = numeric(),
-  qtyArima =numeric(),
-  qtyProphet =numeric(),
-  stringsAsFactors = FALSE
-)
 
+# df for models errors
 models_performance = data.frame(
   id = character(),
   modelo = character(),
@@ -73,16 +64,81 @@ models_performance = data.frame(
   wape = numeric(),
   stringsAsFactors = FALSE
 )
-
 ```
+
+
+ID for testing the code
 
 ```{r}
-i='00612001'
 i='17410306'
-
-
 ```
 
+Hyperparameters Tunning with Grid Search
+
+```{r}
+## data preparation
+df_pt = s_ts %>% filter(id== i) %>% 
+      mutate(date_ym = paste(year(date), month(date), sep = "-")) %>% 
+      arrange(date) %>% 
+      distinct()
+
+df_pt = replace_outliers(df_pt)
+df_pt['qtyLog'] = log(df_pt$quantity+1)
+
+df_prophet2 = df_pt %>% dplyr::select(c(date, qtyLog)) %>%
+rename(ds = date, y = qtyLog)
+
+weeks_train = round(as.numeric(difftime(max(df_pt$date), min(df_pt$date), unit="weeks"))*0.7)
+split_date = min(df_pt$date) + weeks(weeks_train)  
+
+# Set up parameter grid
+param_grid <- list(
+  changepoint_prior_scale = c(0.001, 0.05, 0.08, 0.5),
+  seasonality_prior_scale = c(0.01, 1, 5, 10, 12),
+  seasonality_mode = c('additive', 'multiplicative')
+)
+# Generate all combinations of parameters
+all_params <- expand.grid(param_grid)
+# Create a list to store MAPE values for each combination
+rmses <- numeric(length = nrow(all_params))
+# Use cross validation to evaluate all parameters
+for (k in seq_len(nrow(all_params))) {
+  # Fit a model using one parameter combination
+  params <- all_params[k, ]
+  m <- prophet(
+    df_prophet2,
+    changepoint.prior.scale = params[["changepoint_prior_scale"]],
+    seasonality.prior.scale = params[["seasonality_prior_scale"]],
+    seasonality.mode = params[["seasonality_mode"]]
+  )  
+  # Cross-validation
+  df_cv <- cross_validation(m, initial = round(as.numeric(difftime(split_date, min(df_pt$date), 
+          units = "days"))), period = 30, horizon = 30, units = 'days')
+  # Model performance
+  df_p <- performance_metrics(df_cv, rolling_window=1)
+  # Save model performance metrics
+  rmses[k] <- df_p[['rmse']][1]
+}
+
+# Tuning results
+tuning_results <- data.frame(all_params, rmse = rmses)
+# Find the best parameters
+best_params <- all_params[which.min(rmses), ]
+print(best_params)
+
+# Fit the model on the training dataset
+auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale, #0.05
+                      seasonality.prior.scale = best_params$seasonality_prior_scale, #0.01
+                      seasonality.mode = best_params$seasonality_mode) #multiplictive
+
+# Cross-validation
+initial_date = round(as.numeric(difftime(split_date-weeks(4),  min(df_prophet2$ds), units = "days")))
+auto_model_cv <- cross_validation(auto_model, initial = initial_date, period = 30, horizon = 30, units = 'days')
+auto_model_p <- performance_metrics(auto_model_cv, rolling_window = 1)
+auto_model_p
+```
+
+Multiple time series forecasting
 
 ```{r}
 
@@ -301,202 +357,3 @@ for (i in id_ts){
 write.csv(models_performance, paste("scale_outputs/all_models_performance.csv", sep=""))
 
 ```
-
-
-Correct ARIMA
-
-```{r}
-# propuesta: reducir el periodo de test?
-split_date = max(df$date) - weeks(8)  
-train = df %>% filter(date< split_date)
-test = df %>% filter(date>=split_date)
-
-
-
-ts_log = train$qtyLog
-model_arima = auto.arima(ts_log, stepwise = TRUE)
-forecast_arima = forecast(model_arima, h=8)
-#arima_plot = autoplot(forecast_arima)
-#ggsave(paste("scale_outputs/",i,"/images/arima_plot.png", sep=""), arima_plot)
-#forecast_arima_df = as.data.frame(forecast_arima[[4]])
-test$qtyArima = exp(forecast_arima$mean)-1
-  ## mean model evaluation
-test['rmse_arima'] = rmse_na(test$quantity,test$qtyArima)
-test['wape_arima'] = wape(test$quantity,test$qtyArima)
-
-
-test %>% ggplot(aes(date)) + 
-  geom_line(aes(y = quantity, color = "Actual")) +
-  geom_line(aes(y = qtyArima, color = "Arima")) +
-  labs(y = "Quantity", color = "Series")
-
-nrow(test)
-
-autoplot(forecast_arima, PI=FALSE)
-
-
-```
-
-Correct predictions dataset
-
-```{r}
-models_predictions = data.frame(
-  id = character(),
-  date = as.Date(character(), format = "%Y-%m-%d"),
-  quantity = numeric(),
-  date_ym = character(),
-  qtyLog = numeric(),
-  qtyMean = numeric(),
-  qtyLinear = numeric(),
-  qtyRw = numeric(),
-  qtyMA4 = numeric(),
-  qtyArima =numeric(),
-  qtyProphet =numeric(),
-  stringsAsFactors = FALSE
-)
-
-# replace empty values with NA
-models_predictions[] <- lapply(models_predictions, function(x) ifelse(length(x) == 0, NA, x))
-
-models_predictions <- rbind(models_predictions, data.frame(
-    id = test$id,
-    date = test$date,
-    quantity = test$quantity,
-    date_ym = test$date_ym,
-    qtyLog = test$qtyLog,
-    qtyMean = test$qtyMean,
-    qtyLinear = test$qtyLinear,
-    qtyRw = test$qtyRw,
-    qtyMA4 = test$qtyMA4,
-    qtyArima = test$qtyArima,
-    qtyProphet = test$qtyProphet,
-    stringsAsFactors = FALSE
-      ))
-
-
-test <- test %>% mutate(
-  qtyMean = NA_real_,
-  timeIndex = NA_real_,
-  qtyLinear = NA_real_,
-  qtyRw = NA_real_,
-  qtyMA4 = NA_real_,
-  qtyArima = NA_real_,
-  qtyProphet= NA_real_,
-  )
-
-
-```
-
-Create Prophet con Crossvalidation
-
-```{r}
-
-holidays = read.csv("data/festivos.csv")
-holidays = holidays %>% filter(Lugar == "España" | Lugar == "Madrid") %>% 
-  mutate(
-         holiday = festividad,
-        ds = as.Date(fecha),
-         lower_window= -2,
-         upper_window = 2) %>% 
-  select(!c(fecha, festividad, X, Año, Lugar, tipo)) 
-
-events = data.frame(
-      holiday = c("Covid", "blackfriday", "blackfriday", "blackfriday", "blackfriday"), 
-      ds = c("2020-03-14", '2019-11-29','2020-11-27','2021-11-26', '2022-11-25'),
-      lower_window = c(-15, -7, -7, -7,-7)  ,
-      upper_window = c(15, 1,1,1,1)
-      )
-
-all_events <- rbind(events, holidays) 
-
-
-
-# baseline prophet with crossvalidation
-model_prophet2 = prophet(df_prophet2)
-summary(model_prophet2)
-  ## predictions
-crossvalidation_prophet <- cross_validation(model_prophet2, initial = round(as.numeric(difftime(split_date, min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
-  ## performance metrics
-pht2_metrics = performance_metrics(crossvalidation_prophet, rolling_window = 1)
-
-
-# hyperparameters tunning
-model_prophet3 = prophet(df_prophet2, yearly.seasonality = TRUE, changepoint.range = 0.9, holidays = events)
-model_prophet3 = add_country_holidays(model_prophet3, country_name = 'SPA')
-summary(model_prophet2)
-  ## predictions
-cv_prophet3 <- cross_validation(model_prophet3, initial = round(as.numeric(difftime(split_date, min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
-  ## performance metrics
-performance_metrics(cv_prophet3, rolling_window = 1)
-
-
-```
-
-Hyperparameters Tunning with Grid Search
-
-```{r}
-## data preparation
-df_prophet2 = df %>% dplyr::select(c(date, qtyLog)) %>%
-rename(ds = date, y = qtyLog)
-
-# Set up parameter grid
-param_grid <- list(
-  changepoint_prior_scale = c(0.001, 0.05, 0.08, 0.5),
-  seasonality_prior_scale = c(0.01, 1, 5, 10, 12),
-  seasonality_mode = c('additive', 'multiplicative')
-)
-# Generate all combinations of parameters
-all_params <- expand.grid(param_grid)
-# Create a list to store MAPE values for each combination
-rmses <- numeric(length = nrow(all_params))
-# Use cross validation to evaluate all parameters
-for (k in seq_len(nrow(all_params))) {
-  # Fit a model using one parameter combination
-  params <- all_params[k, ]
-  m <- prophet(
-    df_prophet2,
-    changepoint.prior.scale = params[["changepoint_prior_scale"]],
-    seasonality.prior.scale = params[["seasonality_prior_scale"]],
-    seasonality.mode = params[["seasonality_mode"]]
-  )  
-  # Cross-validation
-  df_cv <- cross_validation(m, initial = round(as.numeric(difftime(split_date, min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
-  # Model performance
-  df_p <- performance_metrics(df_cv, rolling_window=1)
-  # Save model performance metrics
-  rmses[k] <- df_p[['rmse']][1]
-}
-
-# Tuning results
-tuning_results <- data.frame(all_params, rmse = rmses)
-# Find the best parameters
-best_params <- all_params[which.min(rmses), ]
-print(best_params)
-
-# Fit the model on the training dataset
-auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale, #0.05
-                      seasonality.prior.scale = best_params$seasonality_prior_scale, #0.01
-                      seasonality.mode = best_params$seasonality_mode) #multiplictive
-
-# Cross-validation
-initial_date = round(as.numeric(difftime(split_date-weeks(4),  min(df_prophet2$ds), units = "days")))
-auto_model_cv <- cross_validation(auto_model, initial = initial_date, period = 30, horizon = 30, units = 'days')
-auto_model_p <- performance_metrics(auto_model_cv, rolling_window = 1)
-auto_model_p$rmse[1]
-
-
-# Predictions
-auto_model_cv_fil = auto_model_cv %>% filter(ds >= split_date)
-test$qtyProphetTun = exp(auto_model_cv_fil$yhat)-1
-# save metrics
-models_performance <- rbind(models_performance, data.frame(
-      id = i, 
-      model = "Prophet HypOpt Cv", 
-      rmse = rmse_na(test$quantity,test$qtyProphetTun),
-      wape = wape(test$quantity,test$qtyProphetTun)
-      #,smape = auto_model_p$smape[1]
-      ))
-# plot
-plot(model_prophet, fit_prophet)
-```
-
