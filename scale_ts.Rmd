@@ -500,3 +500,67 @@ models_performance <- rbind(models_performance, data.frame(
 plot(model_prophet, fit_prophet)
 ```
 
+
+TEST OF PARALLELIZATION
+
+```{r}
+#https://www.blasbenito.com/post/02_parallelizing_loops_with_r/
+library(foreach)
+
+x <- vector()
+for(i in 1:10) {
+  x[i] <- sqrt(i)
+  #print(x)
+  }
+x
+
+
+# foreach loop with separately results
+foreach(i  = 1:10) %do% {
+  x[i] <- sqrt(i)
+  #print(x)
+}
+
+# foreach loop combining all results in a vector
+x <- foreach(
+  i = 1:10, 
+  .combine = 'c'
+) %do% {
+    sqrt(i)
+  }
+x
+
+# foreach loop running in parallel
+x <- foreach(
+  i = 1:10, 
+  .combine = 'c'
+) %dopar% {
+    sqrt(i)
+}
+
+# create cluster
+n.cores = parallel::detectCores() -1
+
+my.cluster = parallel::makeCluster(
+  n.cores,
+  type= "PSOCK"
+)
+
+print(my.cluster)
+
+doParallel::registerDoParallel(cl = my.cluster)
+foreach::getDoParRegistered()
+
+x <- foreach(
+  i = 1:10, 
+  .combine = 'c'
+) %dopar% {
+    sqrt(i)
+  }
+x
+
+parallel::stopCluster(cl = my.cluster)
+
+```
+
+
