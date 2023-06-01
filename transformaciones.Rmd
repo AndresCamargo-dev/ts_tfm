@@ -1,0 +1,160 @@
+---
+title: "Data Transformations"
+author: "Andrés Camargo"
+date: "2023-04-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+
+sales = read.csv("data/historico_ventas.csv", col.names = c("id", "date", "quantity"))
+
+sales = sales %>% mutate(date = ymd(date))
+
+sales
+```
+Initial summary
+
+```{r}
+#Total records
+nrow(sales) # 597749
+# Total Products
+total_products = n_distinct(sales$id) # 13237
+# Is na?
+sum(is.na(sales$quantity)) # 0
+
+```
+
+- Complete dates of the TS from Min date to Max date
+
+```{r}
+# create complete range of weeks
+weeks_range <- seq(from = min(sales$date), to = max(sales$date), by = "week")
+
+# complete dates and fill quantity with 0
+sales_cp <- sales %>%
+  group_by(id) %>% 
+  complete(date = weeks_range, fill = list(quantity = 0))
+
+#write.csv(sales_cp, file = "data/sales_complete_ts.csv")
+
+```
+
+- Identify consecutive weeks according with quantity
+
+```{r}
+#sales_cp = read.csv("data/sales_complete_ts.csv")
+
+# sales_cp stands for Sales Complete "all weeks"
+sales_cp = sales_cp %>% 
+  arrange(id, date) %>% 
+  group_by(id) %>% 
+  mutate(
+    sale_week = ifelse(quantity >0 , 1, 0),
+    sale_week = ifelse(is.na(sale_week), 0, sale_week)
+  ) 
+
+sales_cp
+
+```
+
+- Remove testing period based on consecutive weeks with sales: (10 consecutive weeks with sales)
+
+```{r}
+# define empty dataframe to add product rows 
+final_df = data.frame()
+
+for (product in unique(sales_cp$id)){
+  #print(product)
+  
+  # asigna los valores del producto a un dataframe
+  df = sales_cp[sales_cp$id== product,]
+  
+  #  calcula numero de repeticiones de la variable consecutive
+  runs = rle(df$sale_week)
+  #print(runs)
+  
+  #runs_df = data.frame(value= runs$values, length=runs$lengths)
+  start_index = which(runs$values == 1 & runs$lengths > 10)[1]
+  #print(start_index)
+  
+  if (!is.na(start_index)) {
+    print("consecutive")
+      # calcula el numero de datapoints antes del start index
+      prev_lengths = sum(runs$lengths[1:(start_index - 1)])
+
+      # dataframe slincing of records from the first date with more than 20 consecutive weeks
+      #print(df[(prev_lengths+1):nrow(df),])
+      final_df = rbind(final_df,df[(prev_lengths+1):nrow(df),])
+      #print(final_df)
+    
+  } else{
+    print("There are no enough consecutive sales")
+  }
+  
+}
+
+final_df
+# 1755 products
+#write.csv(final_df, file="data/sales_no_test_period.csv") 
+
+```
+
+Check criteria
+
+```{r}
+#sales_csc = read.csv("data/sales_no_test_period.csv") 
+sales_csc = final_df 
+
+# define key dates
+max_date = max(sales_csc$date)
+last_two_monts = max_date - months(2)
+
+# Create dummy for selection criteria
+products_clasification = sales_csc %>% 
+  group_by(id) %>% 
+  distinct(date, .keep_all=TRUE) %>% 
+  summarise(
+    min_date = min(date),
+    max_date = max(date),
+    num_records = n(),
+    lifetime = difftime(max_date, min_date, units = "weeks"),
+    n_zero = sum(quantity == 0),
+    percentage_zero = n_zero/num_records,
+    n_wk_consecutive = max(cumsum(sale_week)),
+    ok_zeros = ifelse( percentage_zero < 0.20, 1,0),
+    ok_last2m = ifelse(max_date > last_two_monts, 1, 0),
+    ok_2years = ifelse(n_wk_consecutive > 110, 1,0),
+    t_series = ifelse(ok_zeros==1 & ok_last2m==1 & ok_2years == 1,1,0)
+  ) 
+
+products_clasification
+
+```
+
+
+```{r}
+products_ts = products_clasification %>% 
+  filter (t_series == 1) %>% 
+  arrange(desc(lifetime), n_wk_consecutive, percentage_zero)
+
+products_ts
+write.csv(products_ts, "data/products_statistics.csv")
+```
+Filter Sales dataframe of products selected 
+
+```{r}
+sales_products_ts = sales_csc %>% 
+  filter(id %in% products_ts$id) %>% 
+  arrange(id)
+
+write.csv(sales_products_ts, "data/sales_products_ts.csv")
+```
+
+

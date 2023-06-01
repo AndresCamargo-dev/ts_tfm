@@ -19,8 +19,12 @@ library(forecast)
 library(prophet)
 library(ggplot2)
 library(deepANN)
+library(foreach)
+
 
 s_ts = read.csv("data/sales_products_ts.csv")
+#s_ts = s_ts %>% filter(quantity !=0) ### PROVISIONAL
+products_info = read.csv("data/products_statistics.csv")
 ```
 
 
@@ -62,6 +66,7 @@ models_performance = data.frame(
   modelo = character(),
   rmse = numeric(),
   wape = numeric(),
+  mase = numeric(),
   stringsAsFactors = FALSE
 )
 ```
@@ -70,72 +75,7 @@ models_performance = data.frame(
 ID for testing the code
 
 ```{r}
-i='17410306'
-```
-
-Hyperparameters Tunning with Grid Search
-
-```{r}
-## data preparation
-df_pt = s_ts %>% filter(id== i) %>% 
-      mutate(date_ym = paste(year(date), month(date), sep = "-")) %>% 
-      arrange(date) %>% 
-      distinct()
-
-df_pt = replace_outliers(df_pt)
-df_pt['qtyLog'] = log(df_pt$quantity+1)
-
-df_prophet2 = df_pt %>% dplyr::select(c(date, qtyLog)) %>%
-rename(ds = date, y = qtyLog)
-
-weeks_train = round(as.numeric(difftime(max(df_pt$date), min(df_pt$date), unit="weeks"))*0.7)
-split_date = min(df_pt$date) + weeks(weeks_train)  
-
-# Set up parameter grid
-param_grid <- list(
-  changepoint_prior_scale = c(0.001, 0.05, 0.08, 0.5),
-  seasonality_prior_scale = c(0.01, 1, 5, 10, 12),
-  seasonality_mode = c('additive', 'multiplicative')
-)
-# Generate all combinations of parameters
-all_params <- expand.grid(param_grid)
-# Create a list to store MAPE values for each combination
-rmses <- numeric(length = nrow(all_params))
-# Use cross validation to evaluate all parameters
-for (k in seq_len(nrow(all_params))) {
-  # Fit a model using one parameter combination
-  params <- all_params[k, ]
-  m <- prophet(
-    df_prophet2,
-    changepoint.prior.scale = params[["changepoint_prior_scale"]],
-    seasonality.prior.scale = params[["seasonality_prior_scale"]],
-    seasonality.mode = params[["seasonality_mode"]]
-  )  
-  # Cross-validation
-  df_cv <- cross_validation(m, initial = round(as.numeric(difftime(split_date, min(df_pt$date), 
-          units = "days"))), period = 30, horizon = 30, units = 'days')
-  # Model performance
-  df_p <- performance_metrics(df_cv, rolling_window=1)
-  # Save model performance metrics
-  rmses[k] <- df_p[['rmse']][1]
-}
-
-# Tuning results
-tuning_results <- data.frame(all_params, rmse = rmses)
-# Find the best parameters
-best_params <- all_params[which.min(rmses), ]
-print(best_params)
-
-# Fit the model on the training dataset
-auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale, #0.05
-                      seasonality.prior.scale = best_params$seasonality_prior_scale, #0.01
-                      seasonality.mode = best_params$seasonality_mode) #multiplictive
-
-# Cross-validation
-initial_date = round(as.numeric(difftime(split_date-weeks(4),  min(df_prophet2$ds), units = "days")))
-auto_model_cv <- cross_validation(auto_model, initial = initial_date, period = 30, horizon = 30, units = 'days')
-auto_model_p <- performance_metrics(auto_model_cv, rolling_window = 1)
-auto_model_p
+#i='17410306'
 ```
 
 Multiple time series forecasting
@@ -150,8 +90,12 @@ for (i in id_ts){
       distinct()
       
       # create chart of ts
-      ts_plot = df %>% ggplot(aes(date, quantity)) + geom_line()
+      ts_plot = df %>% ggplot(aes(date, quantity)) + geom_line() 
       ggsave(paste("scale_outputs/",i,"/images/ts_plot.png", sep=""), ts_plot)
+      
+      
+      facet_years = df %>% ggplot(aes(date, quantity)) +  geom_line() + facet_wrap(~ year(date), ncol = 3, scales = 'free_x')
+      ggsave(paste("scale_outputs/",i,"/images/facet_years.png", sep=""), facet_years)
       
       # Replace outliers
       df = replace_outliers(df)
@@ -162,8 +106,8 @@ for (i in id_ts){
       
       # train/test split
       weeks_train = round(as.numeric(difftime(max(df$date), min(df$date), unit="weeks"))*0.7)
-      split_date = min(df$date) + weeks(weeks_train)  
-      #split_date = max(df$date) - weeks(4)
+      #split_date = min(df$date) + weeks(weeks_train)  
+      split_date = max(df$date) - years(1)
       train = df %>% filter(date< split_date)
       test = df %>% filter(date>=split_date)
       
@@ -176,7 +120,8 @@ for (i in id_ts){
       id = i, 
       model = "mean", 
       rmse =  rmse_na(test$quantity,test$qtyMean),
-      wape = wape(test$quantity,test$qtyMean)
+      wape = wape(test$quantity,test$qtyMean),
+      mase = mase(test$quantity,test$qtyMean, step_size = 7)
       ))
         ## Plot
       mean_plot = test %>% ggplot(aes(date)) + 
@@ -201,7 +146,8 @@ for (i in id_ts){
       id = i, 
       model = "linear", 
       rmse =  rmse_na(test$quantity,test$qtyLinear),
-      wape = wape(test$quantity,test$qtyLinear)
+      wape = wape(test$quantity,test$qtyLinear),
+      mase = mase(test$quantity,test$qtyLinear, step_size = 7)
       ))
         ## plot
       linear_plot = test %>% ggplot(aes(date)) + 
@@ -223,7 +169,8 @@ for (i in id_ts){
       id = i, 
       model = "Random Walk", 
       rmse =  rmse_na(test$quantity,test$qtyRw),
-      wape = wape(test$quantity,test$qtyRw)
+      wape = wape(test$quantity,test$qtyRw),
+      mase = mase(test$quantity,test$qtyRw, step_size = 7)
       ))
         ## Plot
       rw_plot  = test %>% ggplot(aes(date)) + 
@@ -243,7 +190,8 @@ for (i in id_ts){
       id = i, 
       model = "Mooving Average", 
       rmse =  rmse_na(test$quantity,test$qtyMA4),
-      wape = wape(test$quantity,test$qtyMA4)
+      wape = wape(test$quantity,test$qtyMA4),
+      mase = mase(test$quantity,test$qtyMA4, step_size = 7)
       ))
 
         ## Plot
@@ -268,58 +216,68 @@ for (i in id_ts){
       id = i, 
       model = "Arima", 
       rmse =  rmse_na(test$quantity,test$qtyArima),
-      wape = wape(test$quantity,test$qtyArima)
+      wape = wape(test$quantity,test$qtyArima),
+      mase = mase(test$quantity,test$qtyArima, step_size = 7)
       ))
 
       
 
-      # Prophet model - baseline
-        ## formating
-      df_prophet = train %>% dplyr::select(c(date, qtyLog)) %>%
-      rename(ds = date, y = qtyLog)
-        ## model
-      model_prophet = prophet(df_prophet)
-      summary(model_prophet)
-        ## predictions
-      future_df = make_future_dataframe(model_prophet, periods=nrow(test), freq="week")
-      forecast_prophet = predict(model_prophet, future_df)
-        ## plot
-      prophet_fcst_plot = plot(model_prophet, forecast_prophet)
-      ggsave(paste("scale_outputs/",i,"/images/prophet_fcst_plot.png", sep=""), prophet_fcst_plot)
-      prophet_components_plot = prophet_plot_components(
-        model_prophet,forecast_prophet, uncertainty = TRUE, plot_cap = TRUE,
-        weekly_start = 0, yearly_start = 0, render_plot = TRUE
+      # Prophet model 
+        
+        ## Set up parallel backend
+      n.cores = parallel::detectCores() -1
+      my.cluster = parallel::makeCluster(
+        n.cores,
+        type= "PSOCK"
       )
-      for (j in seq_along(prophet_components_plot)){
-        ggsave(paste("scale_outputs/",i,"/images/prophet_components_plot",j,".png", sep=""),
-             prophet_components_plot[[j]])
-      }
-        ## evaluation
-      qtyLogProphet = forecast_prophet$yhat[(nrow(train)+1):length(forecast_prophet$yhat)]
-      test$qtyProphet = exp(qtyLogProphet)-1
-      models_performance <- rbind(models_performance, data.frame(
-      id = i, 
-      model = "Prophet default Hyp", 
-      rmse =  rmse_na(test$quantity,test$qtyProphet),
-      wape = wape(test$quantity,test$qtyProphet)
-      ))
-        ## Plot prediction/actual
-      plot_prophet_dft = test %>% ggplot(aes(date)) + 
-      geom_line(aes(y = quantity, color = "Actual")) +
-      geom_line(aes(y = qtyProphet, color = "Prophet")) +
-      labs(y = "Quantity", color = "Series") + theme_minimal()
-      ggsave(paste("scale_outputs/",i,"/images/prophet_dft_plot.png", sep=""), plot_prophet_dft)
-
-
-      # Prophet - hyperparameters tunned
-        ## data preparation
+      doParallel::registerDoParallel(cl = my.cluster)
+      foreach::getDoParRegistered()
+      
+        ## Data preparation
       df_prophet2 = df %>% dplyr::select(c(date, qtyLog)) %>%
       rename(ds = date, y = qtyLog)
-
+      
+        ## Set up parameter grid
+      param_grid <- list(
+        changepoint_prior_scale = c(0.001, 0.05, 0.08, 0.5),
+        seasonality_prior_scale = c(0.01, 1, 5, 10, 12),
+        seasonality_mode = c('additive', 'multiplicative')
+      )
+      
+        ## Generate all combinations of parameters
+      all_params <- expand.grid(param_grid)
+      
+        ## Create a list to store RMSE values for each combination
+      rmses <- foreach(k = 1:nrow(all_params), .combine = 'c', .packages = 'prophet') %dopar% {
+        # Fit a model using one parameter combination
+        params <- all_params[k, ]
+        m <- prophet(
+          df_prophet2,
+          changepoint.prior.scale = params[["changepoint_prior_scale"]],
+          seasonality.prior.scale = params[["seasonality_prior_scale"]],
+          seasonality.mode = params[["seasonality_mode"]]
+        )
+        # Cross-validation
+        df_cv <- cross_validation(m, initial = round(as.numeric(difftime(split_date, min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
+        # Model performance
+        df_p <- performance_metrics(df_cv, rolling_window = 1)
+        # Return RMSE value
+        df_p[['rmse']][1]
+      }
+      
+        # Stop the parallel backend
+      parallel::stopCluster(cl = my.cluster)
+      
+        # Combine parameter grid and RMSE values
+      tuning_results <- data.frame(all_params, rmse = rmses)
+      
+        # Find the best parameters
+      best_params <- all_params[which.min(rmses), ]
+      write.csv(best_params, paste("scale_outputs/",i,"/best_params.csv", sep=""))
         ## Fit the model
-      auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale, #0.05
-                            seasonality.prior.scale = best_params$seasonality_prior_scale, #0.01
-                            seasonality.mode = best_params$seasonality_mode) #multiplictive
+      auto_model <- prophet(df_prophet2, changepoint.prior.scale = best_params$changepoint_prior_scale, 
+                            seasonality.prior.scale = best_params$seasonality_prior_scale, 
+                            seasonality.mode = best_params$seasonality_mode) 
       
         ## Cross-validation
       auto_model_cv <- cross_validation(auto_model, initial = round(as.numeric(difftime(split_date,  min(df$date), units = "days"))), period = 30, horizon = 30, units = 'days')
@@ -333,7 +291,8 @@ for (i in id_ts){
             id = i, 
             model = "Prophet HypOpt Cv", 
             rmse = rmse_na(test$quantity,test$qtyProphetTun),
-            wape = wape(test$quantity,test$qtyProphetTun)
+            wape = wape(test$quantity,test$qtyProphetTun),
+            mase = mase(test$quantity,test$qtyProphetTun, step_size = 7)
             #,smape = auto_model_p$smape[1]
             ))
         ## plot
@@ -343,7 +302,8 @@ for (i in id_ts){
       geom_line(aes(y = qtyProphetTun, color = "Prophet Tunned")) +
       labs(y = "Quantity", color = "Series") + theme_minimal()
       ggsave(paste("scale_outputs/",i,"/images/prophet_tunned_plot.png", sep=""), plot_prophet_tunned)
-
+      
+      
       
       # Save files
       write.csv(test, paste("scale_outputs/",i,"/models_results.csv", sep=""))
@@ -354,6 +314,11 @@ for (i in id_ts){
 
 }
 
+# Include products statistics
+models_performance = models_performance %>% left_join(products_info, by='id') %>%  
+  select(id,model,rmse,wape,num_records, percentage_zero, n_zero, n_wk_consecutive) 
+
 write.csv(models_performance, paste("scale_outputs/all_models_performance.csv", sep=""))
 
 ```
+
